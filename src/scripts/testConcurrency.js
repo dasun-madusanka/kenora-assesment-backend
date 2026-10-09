@@ -35,17 +35,24 @@ const runConcurrencyTest = async () => {
     }
 
     const workshop = wsRes.rows[0];
-    const initialSeatsLeft = workshop.capacity - workshop.active_count;
-    console.log(`[Target Workshop] Code: ${workshop.code} | Title: "${workshop.title}"`);
-    console.log(`[Initial State] Capacity: ${workshop.capacity} | Active Bookings: ${workshop.active_count} | Available Seats: ${initialSeatsLeft}`);
+    let availableSeatsToTest = workshop.capacity - workshop.active_count;
 
-    if (initialSeatsLeft <= 0) {
-      console.log('Resetting workshop to have 1 available seat for testing...');
+    if (availableSeatsToTest <= 0) {
+      console.log('Resetting workshop test bookings to ensure available seats for test...');
       await pool.query(
         `DELETE FROM registrations WHERE workshop_id = $1 AND attendee_email LIKE 'concurrent%'`,
         [workshop.id]
       );
+      const reCountRes = await pool.query(
+        `SELECT COUNT(*)::int AS active_count FROM registrations WHERE workshop_id = $1 AND status = 'CONFIRMED'`,
+        [workshop.id]
+      );
+      workshop.active_count = reCountRes.rows[0].active_count;
+      availableSeatsToTest = workshop.capacity - workshop.active_count;
     }
+
+    console.log(`[Target Workshop] Code: ${workshop.code} | Title: "${workshop.title}"`);
+    console.log(`[Prepared State] Capacity: ${workshop.capacity} | Active Bookings: ${workshop.active_count} | Available Seats: ${availableSeatsToTest}`);
 
     // 2. Get a staff user ID to perform registrations
     const staffRes = await pool.query(`SELECT id FROM users WHERE role = 'STAFF' LIMIT 1`);
@@ -53,7 +60,7 @@ const runConcurrencyTest = async () => {
 
     // 3. Prepare 10 simultaneous registration attempts
     const concurrentRequestsCount = 10;
-    console.log(`\n⚡ Launching ${concurrentRequestsCount} SIMULTANEOUS registration requests for ${initialSeatsLeft} remaining seat...`);
+    console.log(`\n⚡ Launching ${concurrentRequestsCount} SIMULTANEOUS registration requests for ${availableSeatsToTest} remaining seat(s)...`);
 
     const promises = [];
     for (let i = 1; i <= concurrentRequestsCount; i++) {
@@ -102,13 +109,13 @@ const runConcurrencyTest = async () => {
     console.log(`\n[Database Ground Truth] Final Confirmed Seats: ${finalCount} / ${workshop.capacity}`);
 
     // 6. Verification Assertions
-    if (successes.length === initialSeatsLeft && finalCount === workshop.capacity) {
+    if (successes.length === availableSeatsToTest && finalCount === workshop.capacity) {
       console.log('\n✅ PASS: Concurrency test succeeded without overbooking!');
       console.log('   Pessimistic row locking successfully serialized simultaneous transactions.');
       console.log('   The capacity rule was strictly upheld.');
     } else {
       console.error('\n❌ FAIL: Capacity violation detected!');
-      console.error(`   Expected exactly ${initialSeatsLeft} success, got ${successes.length}.`);
+      console.error(`   Expected exactly ${availableSeatsToTest} success, got ${successes.length}.`);
       process.exit(1);
     }
 
