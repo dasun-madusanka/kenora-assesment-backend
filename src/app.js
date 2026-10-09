@@ -38,6 +38,7 @@ app.use('/api/auth', require('./modules/auth/auth.routes'));
 app.use('/api/users', require('./modules/users/users.routes'));
 app.use('/api/workshops', require('./modules/workshops/workshops.routes'));
 app.use('/api/registrations', require('./modules/registrations/registrations.routes'));
+app.use('/api/audit-logs', require('./modules/audit/audit.routes'));
 
 // Fallback for undefined routes
 app.use((req, res, next) => {

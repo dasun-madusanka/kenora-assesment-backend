@@ -36,4 +36,14 @@ router.post(
 
 router.get('/:id/registrations', requireManagerOrStaff, registrationsController.getWorkshopRegistrations);
 
+// Bonus: Waitlist queueing for workshops: Manager & Staff only
+const waitlistController = require('../waitlist/waitlist.controller');
+router.post(
+  '/:id/waitlist',
+  requireManagerOrStaff,
+  validateBody(['attendeeName', 'attendeeEmail']),
+  waitlistController.addToWaitlist
+);
+router.get('/:id/waitlist', requireManagerOrStaff, waitlistController.getWorkshopWaitlist);
+
 module.exports = router;
