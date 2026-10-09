@@ -21,7 +21,19 @@ router.post(
   workshopsController.createWorkshop
 );
 
+const registrationsController = require('../registrations/registrations.controller');
+
 router.put('/:id', requireManager, workshopsController.updateWorkshop);
 router.patch('/:id', requireManager, workshopsController.updateWorkshop);
+
+// Registrations for a workshop: Manager & Staff only (Admin refused with 403)
+router.post(
+  '/:id/register',
+  requireManagerOrStaff,
+  validateBody(['attendeeName', 'attendeeEmail']),
+  registrationsController.registerAttendee
+);
+
+router.get('/:id/registrations', requireManagerOrStaff, registrationsController.getWorkshopRegistrations);
 
 module.exports = router;
