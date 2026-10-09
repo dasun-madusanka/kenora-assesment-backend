@@ -33,6 +33,10 @@ app.get('/api', (req, res) => {
   });
 });
 
+// Modular Routes
+app.use('/api/auth', require('./modules/auth/auth.routes'));
+app.use('/api/users', require('./modules/users/users.routes'));
+
 // Fallback for undefined routes
 app.use((req, res, next) => {
   next(ApiError.notFound(`Route not found: ${req.method} ${req.originalUrl}`));
