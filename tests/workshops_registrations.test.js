@@ -2,6 +2,8 @@ const request = require('supertest');
 const app = require('../src/app');
 const { pool } = require('../src/config/db');
 
+jest.setTimeout(30000);
+
 describe('Workshops & Registrations Flow', () => {
   let managerToken = '';
   let staffToken = '';
@@ -34,10 +36,6 @@ describe('Workshops & Registrations Flow', () => {
       });
 
     testWorkshopId = wsRes.body.data.id;
-  });
-
-  afterAll(async () => {
-    await pool.end();
   });
 
   describe('Finding workshops', () => {

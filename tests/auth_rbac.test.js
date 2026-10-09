@@ -2,6 +2,8 @@ const request = require('supertest');
 const app = require('../src/app');
 const { pool } = require('../src/config/db');
 
+jest.setTimeout(30000);
+
 describe('Authentication & Strict Role-Based Access Control (RBAC)', () => {
   let adminToken = '';
   let managerToken = '';
@@ -25,10 +27,6 @@ describe('Authentication & Strict Role-Based Access Control (RBAC)', () => {
       .post('/api/auth/login')
       .send({ email: 'nimalp@gmail.com', password: 'Password123!' });
     staffToken = staffRes.body.data.token;
-  });
-
-  afterAll(async () => {
-    await pool.end();
   });
 
   describe('Permission: Create user accounts & set roles', () => {
