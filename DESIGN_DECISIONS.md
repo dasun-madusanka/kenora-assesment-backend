@@ -1,70 +1,80 @@
-# Design Decisions & Architecture Notes
+# Workshop Registration Service - Design & Architecture Notes
 
-This document covers the technical choices, design trade-offs, and concurrency handling for the Workshop Registration Service.
-
----
-
-## 1. Stack Choices and Rationale
-
-- **Express.js with JavaScript**: 
-  Lightweight and quick to set up for a 3-hour challenge. It gives direct control over middleware and routing without boilerplate overhead.
-- **PostgreSQL (`pg` pool)**:
-  Chosen because the application requires strict relational consistency, foreign key constraints, and reliable transactional locking to prevent overbooking.
-- **JWT and bcryptjs**:
-  Standard token-based auth for stateless API calls. Passwords are salted and hashed with bcrypt (cost factor 10).
+A one-page summary of technical choices, architecture decisions, concurrency handling, and trade-offs.
 
 ---
 
-## 2. Preventing Over-Registration (Concurrency Handling)
+## 1. Stack Choices and Why
 
-The biggest issue described by the client was race conditions when multiple staff members register attendees for the last available seat at the same time.
-
-A standard check-then-insert pattern causes overbooking:
-1. Request A reads remaining seats: 1 seat left.
-2. Request B reads remaining seats: 1 seat left.
-3. Both proceed to insert registrations. Workshop with 20 seats now has 21 registrations.
-
-### Solution:
-Every registration runs inside an explicit PostgreSQL transaction with row-level locking:
-1. `BEGIN` transaction.
-2. `SELECT capacity, status FROM workshops WHERE id = $1 FOR UPDATE`:
-   This places an exclusive row-level lock on the workshop. Any competing registration request for the same workshop must wait until this transaction completes.
-3. Count active registrations (`status = 'CONFIRMED'`) while holding the lock.
-4. If active count >= capacity, rollback and return `409 Conflict`.
-5. Otherwise, insert the registration, record the audit entry, and `COMMIT`.
-
-A test script (`npm run test:concurrency`) simulates 10 concurrent booking requests trying to grab 1 remaining seat. Exactly 1 request succeeds and 9 are rejected, keeping total bookings strictly at capacity.
+- **Backend: Express.js (Node.js)**
+  Express was chosen because it is lightweight, fast to configure, and allows direct control over middleware for authentication and role-based access control without heavyweight framework boilerplate.
+- **Database: PostgreSQL (Neon Serverless)**
+  The core requirement of this challenge is strict capacity enforcement under concurrent phone bookings. PostgreSQL provides ACID transactions, reliable row-level locking (`FOR UPDATE`), and foreign-key integrity.
+- **Frontend: React, TypeScript, Vite, Tailwind CSS**
+  Vite provides an instant development and build setup. TypeScript catches API contract mismatches early. Tailwind CSS enables a clean, uncluttered, and responsive UI suited for front-desk staff with zero technical training.
+- **Authentication: JWT + bcryptjs**
+  Stateless token-based authentication with bcrypt-hashed passwords (cost factor 10). It eliminates session store complexity while allowing clean role authorization headers on every request.
 
 ---
 
-## 3. Access Control (RBAC)
+## 2. Design Decisions
 
-The challenge requirements specify strict backend permission checks:
-- **Admin**: Can only create staff accounts and assign roles. Denied access (403) from workshops and registrations.
-- **Manager**: Can create/edit workshops, register/cancel attendees, and view workshops and history. Denied user management.
-- **Staff**: Can register/cancel attendees and view workshops and history. Denied creating workshops or users.
-
-Enforcement is implemented via middleware (`requireRole`, `requireAdmin`, `requireManager`, `requireManagerOrStaff`). If an account lacks permission, the server returns 403 Forbidden with a clear message.
-
----
-
-## 4. Cancellation and Registration History
-
-- Registrations are never hard-deleted.
-- When an attendee cancels, `status` changes to `'CANCELLED'`, and the server records `cancelled_by` (staff ID), `cancelled_at` (timestamp), and optional `cancellation_reason`.
-- Because the available seat count only includes `status = 'CONFIRMED'`, cancelling a registration instantly frees up the seat while maintaining complete audit history.
+- **Strict Role-Based Access Control (RBAC) at API Level**:
+  Rather than just hiding buttons in the UI, permissions are strictly checked in backend middleware (`requireRole`). An Admin attempting to register an attendee or a Staff member attempting to add a workshop receives an immediate `403 Forbidden`.
+- **Soft Deletion & Cancellation Tracking**:
+  When an attendee cancels, records are never purged from the database. Instead, `status` changes to `CANCELLED`, and the database captures `cancelled_by` (staff ID), `cancelled_at`, and an optional reason. This keeps active capacity accurate while preserving an unbroken audit trail.
+- **Stateless Frontend with Context**:
+  Auth state lives in a lightweight React context backed by `localStorage` for session persistence across page refreshes. Role-based view guards keep the interface focused on what the logged-in staff member needs.
 
 ---
 
-## 5. Trade-offs and Assumptions
+## 3. How You Prevent Over-Registration
 
-- **Attendee accounts**: Attendees are registered by front desk staff over phone or in-person, so attendees do not have user accounts or passwords. We only store name and email.
-- **Unique email per workshop**: An attendee can sign up for multiple workshops, but cannot register twice for the same workshop session while already having a confirmed seat.
-- **Database locks vs Redis**: Chose PostgreSQL row-level locks over an external Redis distributed lock. PostgreSQL already provides ACID guarantees out of the box and avoids introducing extra operational infrastructure.
+The client highlighted Saturday morning chaos where multiple staff members register attendees for the last remaining seat at the exact same time.
+
+A regular `SELECT count ... INSERT` pattern produces a race condition where multiple requests see 1 seat remaining and both insert, causing overbooking.
+
+To guarantee zero overbooking:
+1. Every registration executes inside an atomic PostgreSQL transaction (`BEGIN ... COMMIT`).
+2. The transaction locks the target workshop row immediately:
+   `SELECT capacity, status FROM workshops WHERE id = $1 FOR UPDATE`
+   Any concurrent request for the same workshop must wait in line for this lock to release.
+3. While holding the lock, the transaction counts confirmed active registrations (`status = 'CONFIRMED'`).
+4. If active count >= capacity, the transaction rolls back and returns a `409 Conflict` error ("Workshop is fully booked").
+5. If seats remain, it inserts the registration record and commits.
+
+This was verified with a concurrency test script (`npm run test:concurrency`) running 10 simultaneous requests for 1 remaining seat. Exactly 1 request succeeds and 9 are rejected, keeping active registrations strictly within capacity.
 
 ---
 
-## 6. Bonus Features
+## 4. Trade-offs
 
-- **Audit Trail**: Built an `audit_logs` table tracking user creation, role updates, workshop edits, registrations, and cancellations with timestamp and actor ID.
-- **Waitlist Queue**: Added a `waitlist` table for full workshops. When a confirmed seat is cancelled, the transaction checks for waiting attendees and automatically promotes the earliest one.
+- **PostgreSQL Row Locks vs Redis Distributed Locks**:
+  Redis locks (like Redlock) can be useful in massive multi-region distributed setups. However, for a community training centre with ~15 staff across 3 locations, PostgreSQL row-level locks give identical safety guarantees with zero external infrastructure dependencies or operational overhead.
+- **Local Storage JWT vs HTTP-Only Cookies**:
+  HTTP-only cookies provide better XSS protection in enterprise applications. For this challenge, JWT in `localStorage` was chosen for speed of implementation and clean decoupled CORS communication between separate frontend and backend hosting domains.
+- **Lightweight Forms vs Heavy Form Libraries**:
+  Used standard React controlled state with custom regex validations instead of Formik or React Hook Form to keep dependency size small and code straightforward to read.
+
+---
+
+## 5. Assumptions Made
+
+- **Attendees do not have accounts**: Front desk staff take registrations over the phone or at reception. Attendees only provide a name and email address. They do not log into the system.
+- **One active seat per attendee per workshop**: An attendee cannot hold duplicate active registrations for the same workshop session, but can register for different workshops.
+- **Community centre locations**: A community centre with three locations needs location tracking per workshop (`Downtown Campus`, `North Hub`, `West End`).
+
+---
+
+## 6. Anything You Skipped
+
+- **Email Delivery / SMTP Integration**: Notifications (such as email confirmations or cancellation receipts) are logged to the console/audit records rather than dispatched via third-party email providers (SendGrid/AWS SES) to avoid external credentials.
+- **Attendee Self-Service Portal & Payments**: Focused strictly on the staff front-desk portal as specified in the business context, skipping payment gateway integration and attendee account self-management.
+- **Automated Password Reset Flow**: Skipped self-service email-based password reset tokens since Administrators directly manage and provision staff accounts.
+
+---
+
+## 7. Bonus Features Implemented
+
+- **Audit Trail**: Created an `audit_logs` table tracking user creation, role modifications, workshop updates, and registration status changes with timestamps and user IDs.
+- **Automated Waitlist Queue**: When a workshop reaches full capacity, staff can place attendees on a waitlist. Cancelling a confirmed registration automatically promotes the next eligible waitlisted attendee.

@@ -2,6 +2,12 @@
 
 Express and PostgreSQL backend for the community workshop registration system.
 
+## Live Deployment (Render)
+- Live API URL: `https://kenora-assesment-backend.onrender.com/api`
+- Health check: `https://kenora-assesment-backend.onrender.com/api/health`
+
+> **Note on Render Free Tier**: Because the backend is hosted on a free Render tier, the instance will spin down into sleep mode after periods of inactivity. The first request may take around 30 to 50 seconds to complete while the instance wakes up.
+
 ## Setup Instructions
 
 ### 1. Install dependencies
