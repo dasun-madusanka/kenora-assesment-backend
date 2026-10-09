@@ -11,12 +11,12 @@ describe('Workshops & Registrations Flow', () => {
     // Authenticate manager & staff
     const managerRes = await request(app)
       .post('/api/auth/login')
-      .send({ email: 'manager@communitytraining.org', password: 'Password123!' });
+      .send({ email: 'nuwans@gmail.com', password: 'Password123!' });
     managerToken = managerRes.body.data.token;
 
     const staffRes = await request(app)
       .post('/api/auth/login')
-      .send({ email: 'staff@communitytraining.org', password: 'Password123!' });
+      .send({ email: 'nimalp@gmail.com', password: 'Password123!' });
     staffToken = staffRes.body.data.token;
 
     // Create a dedicated workshop with capacity = 1
@@ -55,7 +55,7 @@ describe('Workshops & Registrations Flow', () => {
 
     it('Filters workshops by search keyword', async () => {
       const res = await request(app)
-        .get('/api/workshops?search=Pottery')
+        .get('/api/workshops?search=React')
         .set('Authorization', `Bearer ${staffToken}`);
 
       expect(res.status).toBe(200);

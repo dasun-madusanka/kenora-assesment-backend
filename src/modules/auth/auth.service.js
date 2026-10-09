@@ -4,9 +4,6 @@ const config = require('../../config/env');
 const { query } = require('../../config/db');
 const { ApiError } = require('../../middleware/errorHandler');
 
-/**
- * Authenticates user credentials and returns JWT token and sanitized user profile
- */
 const login = async (email, password) => {
   if (!email || !password) {
     throw ApiError.badRequest('Email and password are required');

@@ -1,9 +1,5 @@
 const { ApiError } = require('./errorHandler');
 
-/**
- * Validates request body fields against a schema or required fields
- * @param {Array<string>} requiredFields - List of required field names in req.body
- */
 const validateBody = (requiredFields) => {
   return (req, res, next) => {
     const missing = [];

@@ -4,39 +4,27 @@ const { pool } = require('./config/db');
 
 const PORT = config.PORT;
 
-// Verify database connection before starting HTTP server
 const startServer = async () => {
   try {
     const client = await pool.connect();
-    console.log(`[Database] Connected successfully to PostgreSQL database: "${config.DB.database}" on ${config.DB.host}:${config.DB.port}`);
+    console.log(`Connected to database "${config.DB.database}" on port ${config.DB.port}`);
     client.release();
 
     const server = app.listen(PORT, () => {
-      console.log(`[Server] Workshop Registration Service running on port ${PORT} (${config.NODE_ENV})`);
-      console.log(`[Server] Health check: http://localhost:${PORT}/api/health`);
+      console.log(`Server listening on port ${PORT}`);
     });
 
-    // Graceful shutdown handling
-    const gracefulShutdown = async (signal) => {
-      console.log(`\n[Server] Received ${signal}. Closing server gracefully...`);
+    const shutdown = async () => {
       server.close(async () => {
-        console.log('[Server] HTTP server closed.');
-        try {
-          await pool.end();
-          console.log('[Database] PostgreSQL connection pool closed.');
-          process.exit(0);
-        } catch (err) {
-          console.error('[Database] Error closing pool:', err);
-          process.exit(1);
-        }
+        await pool.end();
+        process.exit(0);
       });
     };
 
-    process.on('SIGINT', () => gracefulShutdown('SIGINT'));
-    process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
-
+    process.on('SIGINT', shutdown);
+    process.on('SIGTERM', shutdown);
   } catch (error) {
-    console.error('[Database] Failed to connect to PostgreSQL:', error.message);
+    console.error('Failed to start server:', error.message);
     process.exit(1);
   }
 };

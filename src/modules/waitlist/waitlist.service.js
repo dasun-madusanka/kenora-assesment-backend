@@ -1,9 +1,6 @@
-const { query, getClient } = require('../../config/db');
+const { query } = require('../../config/db');
 const { ApiError } = require('../../middleware/errorHandler');
 
-/**
- * Adds an attendee to the workshop waitlist (when full or by request)
- */
 const addToWaitlist = async (workshopId, { attendeeName, attendeeEmail }, staffUserId) => {
   if (!attendeeName || !attendeeEmail) {
     throw ApiError.badRequest('Attendee name and attendee email are required');
@@ -12,7 +9,6 @@ const addToWaitlist = async (workshopId, { attendeeName, attendeeEmail }, staffU
   const normalizedEmail = attendeeEmail.trim().toLowerCase();
   const trimmedName = attendeeName.trim();
 
-  // Verify workshop exists and is open
   const workshopRes = await query('SELECT id, code, title, status FROM workshops WHERE id = $1', [workshopId]);
   if (workshopRes.rows.length === 0) {
     throw ApiError.notFound(`Workshop with ID ${workshopId} not found`);
@@ -23,7 +19,6 @@ const addToWaitlist = async (workshopId, { attendeeName, attendeeEmail }, staffU
     throw ApiError.badRequest(`Cannot join waitlist for a ${workshop.status.toLowerCase()} workshop`);
   }
 
-  // Check if already actively registered
   const activeReg = await query(
     `SELECT id FROM registrations WHERE workshop_id = $1 AND attendee_email = $2 AND status = 'CONFIRMED'`,
     [workshopId, normalizedEmail]
@@ -32,7 +27,6 @@ const addToWaitlist = async (workshopId, { attendeeName, attendeeEmail }, staffU
     throw ApiError.conflict('Attendee is already registered with a confirmed seat');
   }
 
-  // Check if already on waiting list
   const existingWaitlist = await query(
     `SELECT id FROM waitlist WHERE workshop_id = $1 AND attendee_email = $2 AND status = 'WAITING'`,
     [workshopId, normalizedEmail]
@@ -50,7 +44,6 @@ const addToWaitlist = async (workshopId, { attendeeName, attendeeEmail }, staffU
 
   const entry = res.rows[0];
 
-  // Audit log entry
   await query(
     `INSERT INTO audit_logs (action, entity_type, entity_id, performed_by, details)
      VALUES ('WAITLIST_JOINED', 'WAITLIST', $1, $2, $3)`,
@@ -64,9 +57,6 @@ const addToWaitlist = async (workshopId, { attendeeName, attendeeEmail }, staffU
   return entry;
 };
 
-/**
- * Retrieves waitlist queue for a workshop in FIFO order
- */
 const getWorkshopWaitlist = async (workshopId) => {
   const workshopCheck = await query('SELECT id, title FROM workshops WHERE id = $1', [workshopId]);
   if (workshopCheck.rows.length === 0) {

@@ -1,27 +1,20 @@
 const { getClient, query } = require('../../config/db');
 const { ApiError } = require('../../middleware/errorHandler');
 
-/**
- * Registers an attendee for a workshop.
- * Uses a strict PostgreSQL transaction with pessimistic row-locking (FOR UPDATE)
- * to guarantee that the capacity rule holds even when concurrent requests arrive
- * at the exact same millisecond.
- */
 const registerAttendee = async (workshopId, { attendeeName, attendeeEmail }, staffUserId) => {
   if (!attendeeName || !attendeeEmail) {
-    throw ApiError.badRequest('Attendee name and attendee email are required');
+    throw ApiError.badRequest('Attendee name and email are required');
   }
 
   const normalizedEmail = attendeeEmail.trim().toLowerCase();
   const trimmedName = attendeeName.trim();
 
-  // Acquire dedicated client from connection pool for atomic transaction
   const client = await getClient();
 
   try {
     await client.query('BEGIN');
 
-    // 1. Lock workshop row exclusively to serialize concurrent booking attempts
+    // Lock workshop row to prevent concurrent overbooking
     const workshopRes = await client.query(
       `SELECT id, code, title, capacity, status 
        FROM workshops 
@@ -47,7 +40,7 @@ const registerAttendee = async (workshopId, { attendeeName, attendeeEmail }, sta
       throw ApiError.badRequest('Cannot register for a completed workshop');
     }
 
-    // 2. Prevent duplicate active registration for the same attendee on this workshop
+    // Check if attendee is already registered
     const duplicateCheck = await client.query(
       `SELECT id FROM registrations 
        WHERE workshop_id = $1 AND attendee_email = $2 AND status = 'CONFIRMED'`,
@@ -56,10 +49,10 @@ const registerAttendee = async (workshopId, { attendeeName, attendeeEmail }, sta
 
     if (duplicateCheck.rows.length > 0) {
       await client.query('ROLLBACK');
-      throw ApiError.conflict(`Attendee with email "${normalizedEmail}" is already registered for this workshop`);
+      throw ApiError.conflict(`Attendee with email "${normalizedEmail}" is already registered`);
     }
 
-    // 3. Count current active confirmed registrations while holding row lock
+    // Count confirmed bookings while holding lock
     const countRes = await client.query(
       `SELECT COUNT(*)::int AS active_count 
        FROM registrations 
@@ -69,7 +62,6 @@ const registerAttendee = async (workshopId, { attendeeName, attendeeEmail }, sta
 
     const activeCount = countRes.rows[0].active_count;
 
-    // Strict capacity rule check
     if (activeCount >= workshop.capacity) {
       await client.query('ROLLBACK');
       throw ApiError.conflict(
@@ -78,7 +70,6 @@ const registerAttendee = async (workshopId, { attendeeName, attendeeEmail }, sta
       );
     }
 
-    // 4. Insert confirmed registration (seat taken)
     const insertRes = await client.query(
       `INSERT INTO registrations (
         workshop_id, attendee_name, attendee_email, status, registered_by, registered_at
@@ -90,7 +81,6 @@ const registerAttendee = async (workshopId, { attendeeName, attendeeEmail }, sta
 
     const registration = insertRes.rows[0];
 
-    // 5. Record audit log
     await client.query(
       `INSERT INTO audit_logs (action, entity_type, entity_id, performed_by, details)
        VALUES ('REGISTRATION_CREATED', 'REGISTRATION', $1, $2, $3)`,
@@ -99,11 +89,7 @@ const registerAttendee = async (workshopId, { attendeeName, attendeeEmail }, sta
         staffUserId,
         JSON.stringify({
           workshop_id: workshopId,
-          workshop_code: workshop.code,
-          attendee_name: trimmedName,
           attendee_email: normalizedEmail,
-          seats_taken: activeCount + 1,
-          total_capacity: workshop.capacity,
         }),
       ]
     );
@@ -129,19 +115,12 @@ const registerAttendee = async (workshopId, { attendeeName, attendeeEmail }, sta
   }
 };
 
-/**
- * Cancels a registration.
- * Frees the seat, preserves the record permanently in registrations table,
- * and records who cancelled it and when.
- * Checks for waitlisted attendees and automatically promotes the earliest one.
- */
 const cancelRegistration = async (registrationId, cancellationReason, staffUserId) => {
   const client = await getClient();
 
   try {
     await client.query('BEGIN');
 
-    // 1. Lock the registration row
     const regRes = await client.query(
       `SELECT r.*, w.title as workshop_title, w.capacity
        FROM registrations r
@@ -160,10 +139,10 @@ const cancelRegistration = async (registrationId, cancellationReason, staffUserI
 
     if (reg.status === 'CANCELLED') {
       await client.query('ROLLBACK');
-      throw ApiError.badRequest('This registration has already been cancelled');
+      throw ApiError.badRequest('Registration is already cancelled');
     }
 
-    // 2. Update registration to CANCELLED and store cancellation metadata
+    // Keep record but mark cancelled
     const updateRes = await client.query(
       `UPDATE registrations
        SET status = 'CANCELLED',
@@ -178,7 +157,6 @@ const cancelRegistration = async (registrationId, cancellationReason, staffUserI
 
     const cancelledRegistration = updateRes.rows[0];
 
-    // 3. Record cancellation in audit log
     await client.query(
       `INSERT INTO audit_logs (action, entity_type, entity_id, performed_by, details)
        VALUES ('REGISTRATION_CANCELLED', 'REGISTRATION', $1, $2, $3)`,
@@ -187,14 +165,13 @@ const cancelRegistration = async (registrationId, cancellationReason, staffUserI
         staffUserId,
         JSON.stringify({
           workshop_id: reg.workshop_id,
-          attendee_name: reg.attendee_name,
           attendee_email: reg.attendee_email,
-          reason: cancellationReason || 'No reason provided',
+          reason: cancellationReason || null,
         }),
       ]
     );
 
-    // 4. Bonus: Check waitlist for this workshop. If an attendee is waiting, promote them!
+    // If waitlist has waiting attendees, promote the earliest one
     let promotedAttendee = null;
     const waitlistRes = await client.query(
       `SELECT * FROM waitlist 
@@ -208,7 +185,6 @@ const cancelRegistration = async (registrationId, cancellationReason, staffUserI
     if (waitlistRes.rows.length > 0) {
       const waitlistEntry = waitlistRes.rows[0];
 
-      // Mark waitlist entry as PROMOTED
       await client.query(
         `UPDATE waitlist 
          SET status = 'PROMOTED', promoted_at = NOW() 
@@ -216,7 +192,6 @@ const cancelRegistration = async (registrationId, cancellationReason, staffUserI
         [waitlistEntry.id]
       );
 
-      // Create new confirmed registration for promoted attendee
       const promoRegRes = await client.query(
         `INSERT INTO registrations (
           workshop_id, attendee_name, attendee_email, status, registered_by, registered_at
@@ -228,7 +203,6 @@ const cancelRegistration = async (registrationId, cancellationReason, staffUserI
 
       promotedAttendee = promoRegRes.rows[0];
 
-      // Audit log the waitlist promotion
       await client.query(
         `INSERT INTO audit_logs (action, entity_type, entity_id, performed_by, details)
          VALUES ('WAITLIST_PROMOTED', 'REGISTRATION', $1, $2, $3)`,
@@ -258,12 +232,7 @@ const cancelRegistration = async (registrationId, cancellationReason, staffUserI
   }
 };
 
-/**
- * Retrieves the complete registration history for a specific workshop,
- * including active and cancelled registrations, who registered or cancelled, and timestamps.
- */
 const getWorkshopRegistrations = async (workshopId) => {
-  // First verify workshop exists
   const workshopCheck = await query('SELECT id, title, capacity FROM workshops WHERE id = $1', [workshopId]);
   if (workshopCheck.rows.length === 0) {
     throw ApiError.notFound(`Workshop with ID ${workshopId} not found`);
@@ -301,9 +270,6 @@ const getWorkshopRegistrations = async (workshopId) => {
   };
 };
 
-/**
- * Retrieves system-wide registration history across all workshops
- */
 const getAllRegistrationsHistory = async (filters = {}) => {
   const { status, search } = filters;
   let sql = `

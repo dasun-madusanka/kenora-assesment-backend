@@ -1,8 +1,5 @@
 const { query } = require('../../config/db');
 
-/**
- * Retrieves audit logs with optional filtering by action, entity_type, and date range
- */
 const getAuditLogs = async (filters = {}) => {
   const { action, entityType, from, to } = filters;
 

@@ -11,19 +11,19 @@ describe('Authentication & Strict Role-Based Access Control (RBAC)', () => {
     // 1. Log in Admin
     const adminRes = await request(app)
       .post('/api/auth/login')
-      .send({ email: 'admin@communitytraining.org', password: 'AdminPass123!' });
+      .send({ email: 'kamal@gmail.com', password: 'AdminPass123!' });
     adminToken = adminRes.body.data.token;
 
     // 2. Log in Manager
     const managerRes = await request(app)
       .post('/api/auth/login')
-      .send({ email: 'manager@communitytraining.org', password: 'Password123!' });
+      .send({ email: 'nuwans@gmail.com', password: 'Password123!' });
     managerToken = managerRes.body.data.token;
 
     // 3. Log in Staff
     const staffRes = await request(app)
       .post('/api/auth/login')
-      .send({ email: 'staff@communitytraining.org', password: 'Password123!' });
+      .send({ email: 'nimalp@gmail.com', password: 'Password123!' });
     staffToken = staffRes.body.data.token;
   });
 

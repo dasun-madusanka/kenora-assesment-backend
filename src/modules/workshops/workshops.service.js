@@ -3,13 +3,6 @@ const { ApiError } = require('../../middleware/errorHandler');
 
 const ALLOWED_STATUSES = ['SCHEDULED', 'ACTIVE', 'COMPLETED', 'CANCELLED'];
 
-/**
- * Retrieves workshops with multi-criteria filtering:
- * - date range (from / to)
- * - status
- * - seatsAvailable (only workshops with capacity > active_registrations)
- * - search keyword (code, title, instructor, location)
- */
 const getWorkshops = async (filters = {}) => {
   const { from, to, status, seatsAvailable, search } = filters;
 
@@ -87,9 +80,6 @@ const getWorkshops = async (filters = {}) => {
   return res.rows;
 };
 
-/**
- * Retrieves a single workshop by ID including registration counts
- */
 const getWorkshopById = async (workshopId) => {
   const sql = `
     SELECT 
@@ -133,9 +123,6 @@ const getWorkshopById = async (workshopId) => {
   return res.rows[0];
 };
 
-/**
- * Creates a new workshop (Manager only)
- */
 const createWorkshop = async (data, userId) => {
   const { code, title, instructor, location, description, startTime, endTime, capacity, status } = data;
 
@@ -145,7 +132,7 @@ const createWorkshop = async (data, userId) => {
 
   const parsedCapacity = parseInt(capacity, 10);
   if (isNaN(parsedCapacity) || parsedCapacity <= 0) {
-    throw ApiError.badRequest('Capacity must be a positive integer greater than 0');
+    throw ApiError.badRequest('Capacity must be a positive integer');
   }
 
   const normalizedCode = code.trim().toUpperCase();
@@ -181,7 +168,6 @@ const createWorkshop = async (data, userId) => {
 
   const newWorkshop = res.rows[0];
 
-  // Audit log entry
   await query(
     `INSERT INTO audit_logs (action, entity_type, entity_id, performed_by, details)
      VALUES ('WORKSHOP_CREATED', 'WORKSHOP', $1, $2, $3)`,
@@ -191,9 +177,6 @@ const createWorkshop = async (data, userId) => {
   return newWorkshop;
 };
 
-/**
- * Updates an existing workshop (Manager only)
- */
 const updateWorkshop = async (workshopId, data, userId) => {
   const existingRes = await query('SELECT * FROM workshops WHERE id = $1', [workshopId]);
   if (existingRes.rows.length === 0) {
@@ -209,7 +192,6 @@ const updateWorkshop = async (workshopId, data, userId) => {
       throw ApiError.badRequest('Capacity must be a positive integer');
     }
 
-    // Safety rule: Capacity cannot be set below currently active registrations
     const activeRes = await query(
       `SELECT COUNT(*)::int AS active_count FROM registrations WHERE workshop_id = $1 AND status = 'CONFIRMED'`,
       [workshopId]
@@ -235,7 +217,7 @@ const updateWorkshop = async (workshopId, data, userId) => {
     newCode = data.code.trim().toUpperCase();
     const duplicate = await query('SELECT id FROM workshops WHERE code = $1 AND id != $2', [newCode, workshopId]);
     if (duplicate.rows.length > 0) {
-      throw ApiError.conflict(`Workshop code "${newCode}" is already in use by another workshop`);
+      throw ApiError.conflict(`Workshop code "${newCode}" is already in use`);
     }
   }
 
@@ -257,16 +239,13 @@ const updateWorkshop = async (workshopId, data, userId) => {
 
   const updatedWorkshop = res.rows[0];
 
-  // Audit log entry
   await query(
     `INSERT INTO audit_logs (action, entity_type, entity_id, performed_by, details)
      VALUES ('WORKSHOP_UPDATED', 'WORKSHOP', $1, $2, $3)`,
     [
       workshopId,
       userId,
-      JSON.stringify({
-        changes: data,
-      }),
+      JSON.stringify({ changes: data }),
     ]
   );
 

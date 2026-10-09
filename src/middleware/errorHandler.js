@@ -1,12 +1,8 @@
-/**
- * Centralized API Error class for predictable HTTP error responses
- */
 class ApiError extends Error {
   constructor(statusCode, message, details = null) {
     super(message);
     this.statusCode = statusCode;
     this.details = details;
-    Error.captureStackTrace(this, this.constructor);
   }
 
   static badRequest(msg, details = null) {
@@ -34,9 +30,6 @@ class ApiError extends Error {
   }
 }
 
-/**
- * Global Express error handling middleware
- */
 const errorHandler = (err, req, res, next) => {
   const statusCode = err.statusCode || (res.statusCode !== 200 ? res.statusCode : 500);
   const response = {

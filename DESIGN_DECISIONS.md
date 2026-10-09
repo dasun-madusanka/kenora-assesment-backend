@@ -1,91 +1,70 @@
-# Architecture & Design Decisions
+# Design Decisions & Architecture Notes
 
-This document details the architectural choices, data integrity strategies, and technical rationale for the **Workshop Registration Service** backend.
-
----
-
-## 1. Stack Choices & Rationale
-
-- **Express.js (Node.js)**:
-  - Lightweight, unopinionated, and battle-tested HTTP framework.
-  - Asynchronous event-driven I/O ideal for handling concurrent I/O-bound web requests.
-  - Allows clean modular separation (Controllers, Services, Routes, Middlewares) without unnecessary framework bloat.
-- **PostgreSQL (`pg` Connection Pool)**:
-  - ACID-compliant relational database engine.
-  - Strong support for row-level locking (`SELECT ... FOR UPDATE`), serializable transactions, and check constraints (`CHECK (capacity > 0)`).
-  - Native JSONB support enables flexible audit log diff storage without sacrificing relational schema integrity.
-- **JSON Web Tokens (JWT) & bcrypt**:
-  - Stateless authentication allows decoupled frontend client requests.
-  - Bcrypt (salt rounds: 10) provides secure one-way password hashing for staff accounts.
+This document covers the technical choices, design trade-offs, and concurrency handling for the Workshop Registration Service.
 
 ---
 
-## 2. Preventing Over-Registration Under Concurrency
+## 1. Stack Choices and Rationale
 
-The core requirement highlighted by the client:
-> *"Last Saturday 24 people turned up for a workshop with 20 seats. Two of us had each promised the last seats on the phone at the same time."*
+- **Express.js with JavaScript**: 
+  Lightweight and quick to set up for a 3-hour challenge. It gives direct control over middleware and routing without boilerplate overhead.
+- **PostgreSQL (`pg` pool)**:
+  Chosen because the application requires strict relational consistency, foreign key constraints, and reliable transactional locking to prevent overbooking.
+- **JWT and bcryptjs**:
+  Standard token-based auth for stateless API calls. Passwords are salted and hashed with bcrypt (cost factor 10).
 
-### Why naive checks fail:
-A simple read-then-write approach (`SELECT COUNT(*) -> if count < capacity -> INSERT`) suffers from a **time-of-check to time-of-use (TOCTOU)** race condition. If two staff members click "Register" simultaneously, both queries observe 1 seat available and both insert, resulting in 21 registrations for a 20-seat room.
+---
 
-### The Solution: Pessimistic Row Locking (`SELECT ... FOR UPDATE`)
-All registration requests are executed within an atomic database transaction:
-1. `BEGIN`: Starts transaction.
+## 2. Preventing Over-Registration (Concurrency Handling)
+
+The biggest issue described by the client was race conditions when multiple staff members register attendees for the last available seat at the same time.
+
+A standard check-then-insert pattern causes overbooking:
+1. Request A reads remaining seats: 1 seat left.
+2. Request B reads remaining seats: 1 seat left.
+3. Both proceed to insert registrations. Workshop with 20 seats now has 21 registrations.
+
+### Solution:
+Every registration runs inside an explicit PostgreSQL transaction with row-level locking:
+1. `BEGIN` transaction.
 2. `SELECT capacity, status FROM workshops WHERE id = $1 FOR UPDATE`:
-   - Acquires an exclusive row-level lock on the workshop record.
-   - Any concurrent registration transaction for the same workshop is placed in a database wait queue until this lock is released.
-3. `SELECT COUNT(*)::int FROM registrations WHERE workshop_id = $1 AND status = 'CONFIRMED'`:
-   - Evaluates the accurate active count while holding the exclusive lock.
-4. **Capacity Gate**:
-   - If `active_count >= capacity`, rolls back transaction and responds with `409 Conflict: Workshop is fully booked`.
-5. `INSERT INTO registrations (...) VALUES (...) RETURNING *`:
-   - Records the confirmed seat.
-6. `COMMIT`: Releases the lock. The next queued request reads the updated count immediately.
+   This places an exclusive row-level lock on the workshop. Any competing registration request for the same workshop must wait until this transaction completes.
+3. Count active registrations (`status = 'CONFIRMED'`) while holding the lock.
+4. If active count >= capacity, rollback and return `409 Conflict`.
+5. Otherwise, insert the registration, record the audit entry, and `COMMIT`.
 
-This guarantees zero over-registration even under heavy parallel load, verified by `npm run test:concurrency`.
+A test script (`npm run test:concurrency`) simulates 10 concurrent booking requests trying to grab 1 remaining seat. Exactly 1 request succeeds and 9 are rejected, keeping total bookings strictly at capacity.
 
 ---
 
-## 3. Access Control & Strict Permission Enforcement
+## 3. Access Control (RBAC)
 
-The assessment matrix defines three distinct roles:
+The challenge requirements specify strict backend permission checks:
+- **Admin**: Can only create staff accounts and assign roles. Denied access (403) from workshops and registrations.
+- **Manager**: Can create/edit workshops, register/cancel attendees, and view workshops and history. Denied user management.
+- **Staff**: Can register/cancel attendees and view workshops and history. Denied creating workshops or users.
 
-| Action | Admin | Manager | Staff |
-|---|---|---|---|
-| Create user accounts & set roles | **YES** | NO | NO |
-| Add & edit workshops | NO | **YES** | NO |
-| Register & cancel attendees | NO | **YES** | **YES** |
-| View workshops, registrations & history | NO | **YES** | **YES** |
-
-### Implementation:
-- Enforcement is handled by `src/middleware/rbac.js`.
-- If an unauthorized role accesses a route (e.g. Admin attempting to view workshops, or Staff attempting to create a workshop), the backend immediately rejects the request with HTTP **`403 Forbidden`**.
+Enforcement is implemented via middleware (`requireRole`, `requireAdmin`, `requireManager`, `requireManagerOrStaff`). If an account lacks permission, the server returns 403 Forbidden with a clear message.
 
 ---
 
-## 4. Cancellation & Registration History
+## 4. Cancellation and Registration History
 
-- **No Hard Deletes**: The client requirement explicitly dictates that records must never be deleted.
-- When an attendee cancels:
-  - `status` is transitioned from `'CONFIRMED'` to `'CANCELLED'`.
-  - The seat is immediately freed because active seat count calculations filter strictly on `status = 'CONFIRMED'`.
-  - `cancelled_by` (staff user ID), `cancelled_at` (timestamp), and optional `cancellation_reason` are permanently preserved.
-  - History endpoints (`GET /api/workshops/:id/registrations` and `GET /api/registrations/history`) display the complete audit of who booked or cancelled and when.
+- Registrations are never hard-deleted.
+- When an attendee cancels, `status` changes to `'CANCELLED'`, and the server records `cancelled_by` (staff ID), `cancelled_at` (timestamp), and optional `cancellation_reason`.
+- Because the available seat count only includes `status = 'CONFIRMED'`, cancelling a registration instantly frees up the seat while maintaining complete audit history.
 
 ---
 
-## 5. Bonus Initiatives Implemented
+## 5. Trade-offs and Assumptions
 
-1. **Audit Trail (`audit_logs`)**:
-   - Records administrative events: user creation, role changes, workshop edits, registrations, and cancellations.
-   - Includes timestamp, actor ID/name, entity type, and structured payload.
-2. **Waitlist Queueing (`waitlist`)**:
-   - When a workshop is full, staff can queue attendees in FIFO order (`POST /api/workshops/:id/waitlist`).
-   - When an existing registration is cancelled, the system automatically checks for waitlisted attendees and promotes the earliest one to a confirmed seat.
+- **Attendee accounts**: Attendees are registered by front desk staff over phone or in-person, so attendees do not have user accounts or passwords. We only store name and email.
+- **Unique email per workshop**: An attendee can sign up for multiple workshops, but cannot register twice for the same workshop session while already having a confirmed seat.
+- **Database locks vs Redis**: Chose PostgreSQL row-level locks over an external Redis distributed lock. PostgreSQL already provides ACID guarantees out of the box and avoids introducing extra operational infrastructure.
 
 ---
 
-## 6. Trade-offs & Assumptions
+## 6. Bonus Features
 
-- **Attendees do not have logins**: Attendees are entered as name and email by staff over the phone or in person. Email uniqueness is scoped per workshop (an attendee cannot have duplicate active seats in the same session, but may attend multiple distinct workshops).
-- **In-Memory vs. Database Transactions**: Handled exclusively via PostgreSQL transactions rather than in-memory locks (like Redis or mutexes) to ensure multi-instance server compatibility and full ACID durability.
+- **Audit Trail**: Built an `audit_logs` table tracking user creation, role updates, workshop edits, registrations, and cancellations with timestamp and actor ID.
+- **Waitlist Queue**: Added a `waitlist` table for full workshops. When a confirmed seat is cancelled, the transaction checks for waiting attendees and automatically promotes the earliest one.
